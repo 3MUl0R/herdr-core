@@ -271,13 +271,13 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
-        assert_eq!(guarded(&path, b"overwritten", None, true, true).unwrap_err().kind, "conflict");
+        assert_eq!(guarded(&path, b"overwritten", None, true, true).err().unwrap().kind, "conflict");
         guarded(&path, b"KEY=value\\n", Some(b""), false, true).unwrap();
-        assert_eq!(guarded(&path, b"bad", Some(b""), false, false).unwrap_err().kind, "conflict");
+        assert_eq!(guarded(&path, b"bad", Some(b""), false, false).err().unwrap().kind, "conflict");
         assert_eq!(std::fs::read(&path).unwrap(), b"KEY=value\\n");
         guarded(&path, b"KEY=changed\\n", Some(b"KEY=value\\n"), false, false).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"KEY=changed\\n");
-        assert_eq!(guarded(&path, b"bad", Some(b"missing"), true, true).unwrap_err().kind, "invalid_params");
+        assert_eq!(guarded(&path, b"bad", Some(b"missing"), true, true).err().unwrap().kind, "invalid_params");
         std::fs::remove_dir_all(root).unwrap();
     }
 
