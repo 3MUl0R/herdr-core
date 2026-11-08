@@ -692,6 +692,29 @@ pub struct FileWriteParams {
     pub data: String,
 }
 
+/// A guarded write: deliberately separate from file.write so older cores fail closed.
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
+pub struct FileWriteCheckedParams {
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub at: FileAt,
+    /// New content, base64 encoded, at most 8 MB.
+    #[arg(skip)]
+    pub data: String,
+    /// Original bytes in base64. A mismatched current file is never overwritten.
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_data: Option<String>,
+    /// Create only when no entry is present; mutually exclusive with expected_data.
+    #[arg(long)]
+    #[serde(default)]
+    pub only_if_missing: bool,
+    /// On Unix, restrict newly-created files to the current user (0600).
+    #[arg(long)]
+    #[serde(default)]
+    pub private: bool,
+}
+
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct FileEditParams {
     #[command(flatten)]

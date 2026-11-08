@@ -1,9 +1,13 @@
 //! `file.read`, `file.write`, `file.edit`: an agent's hands on files on the
 //! machine that has them, whatever harness it runs in.
 
-use crate::api::{Edit, FileAt, FileEditParams, FileReadParams, FileReadResult, FileResult, FileWriteParams};
+use crate::api::{Edit, FileAt, FileEditParams, FileReadParams, FileReadResult, FileResult, FileWriteParams, FileWriteCheckedParams};
 use crate::rpc::RpcError;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+// Serialize core-originated writes and edits. Other processes can still change files.
+static FILE_WRITES: Mutex<()> = Mutex::new(());
 
 /// Raw bytes one read gives or one write takes (inline in one message).
 pub const MAX_BYTES: usize = 8 << 20;
@@ -21,14 +25,64 @@ pub fn write(p: FileWriteParams, from_afar: bool) -> Result<FileResult, RpcError
     if bytes.len() > MAX_BYTES {
         return Err(RpcError::invalid_params(format!("at most {} MB per write", MAX_BYTES >> 20)));
     }
+    let _guard = FILE_WRITES.lock().map_err(|e| RpcError::internal(e.to_string()))?;
+    swap_in(&resolve(&p.at, from_afar), &bytes, false, false)
+}
+
+/// A distinct RPC method makes conditional writes fail on an older core rather
+/// than silently falling back to the legacy unconditional file.write method.
+pub fn write_checked(p: FileWriteCheckedParams, from_afar: bool) -> Result<FileResult, RpcError> {
+    let bytes = crate::put::decode(&p.data).ok_or_else(|| RpcError::invalid_params("data is not base64"))?;
+    if bytes.len() > MAX_BYTES {
+        return Err(RpcError::invalid_params(format!("at most {} MB per write", MAX_BYTES >> 20)));
+    }
+    if p.only_if_missing == p.expected_data.is_some() {
+        return Err(RpcError::invalid_params("provide exactly one of only_if_missing or expected_data"));
+    }
+    let expected = p
+        .expected_data
+        .as_deref()
+        .map(|b64| crate::put::decode(b64).ok_or_else(|| RpcError::invalid_params("expected_data is not base64")))
+        .transpose()?;
+    if expected.as_ref().is_some_and(|b| b.len() > MAX_BYTES) {
+        return Err(RpcError::invalid_params("expected_data is too large"));
+    }
     let path = resolve(&p.at, from_afar);
-    swap_in(&path, &bytes)
+    let _guard = FILE_WRITES.lock().map_err(|e| RpcError::internal(e.to_string()))?;
+    if p.only_if_missing {
+        ensure_missing(&path)?;
+        ensure_missing(&through_links(&path))?;
+    }
+    if let Some(original) = expected {
+        let target = through_links(&path);
+        let metadata = std::fs::metadata(&target).map_err(|e| io(&target, e))?;
+        if !metadata.is_file() || metadata.len() != original.len() as u64 {
+            return Err(conflict(&target));
+        }
+        if std::fs::read(&target).map_err(|e| io(&target, e))? != original {
+            return Err(conflict(&target));
+        }
+    }
+    swap_in(&path, &bytes, p.private, p.only_if_missing)
 }
 
 pub fn edit(p: FileEditParams, from_afar: bool) -> Result<FileResult, RpcError> {
+    let _guard = FILE_WRITES.lock().map_err(|e| RpcError::internal(e.to_string()))?;
     let path = resolve(&p.at, from_afar);
     let edited = apply(&text_of(&path)?, &p.edits)?;
-    swap_in(&path, edited.as_bytes())
+    swap_in(&path, edited.as_bytes(), false, false)
+}
+
+fn conflict(path: &Path) -> RpcError {
+    RpcError::new("conflict", format!("{} changed or already exists; reload before saving", path.display()), "")
+}
+
+fn ensure_missing(path: &Path) -> Result<(), RpcError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Err(conflict(path)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io(path, e)),
+    }
 }
 
 /// Relative paths start at `cwd`, as exec's programs do.
@@ -153,8 +207,9 @@ fn through_links(path: &Path) -> PathBuf {
 
 /// Writes beside the file and renames it in: a reader sees old or new, never
 /// half. Through a symlink to its target; an existing file keeps its mode.
-fn swap_in(path: &Path, bytes: &[u8]) -> Result<FileResult, RpcError> {
-    let path = through_links(path);
+fn swap_in(path: &Path, bytes: &[u8], private: bool, create_only: bool) -> Result<FileResult, RpcError> {
+    // A checked create never follows a late-arriving symlink.
+    let path = if create_only { path.to_path_buf() } else { through_links(path) };
     let dir = path.parent().ok_or_else(|| RpcError::invalid_params("a file, not a folder"))?;
     std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
     let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
@@ -164,16 +219,26 @@ fn swap_in(path: &Path, bytes: &[u8]) -> Result<FileResult, RpcError> {
     new.write(true).create_new(true);
     // Others never see the new content before it has the old file's mode.
     #[cfg(unix)]
-    if mode.is_some() {
+    if mode.is_some() || private {
         std::os::unix::fs::OpenOptionsExt::mode(&mut new, 0o600);
     }
     let written = new
         .open(&tmp)
         .and_then(|mut f| std::io::Write::write_all(&mut f, bytes))
         .and_then(|()| mode.map_or(Ok(()), |m| std::fs::set_permissions(&tmp, m)))
-        .and_then(|()| std::fs::rename(&tmp, &path));
+        .and_then(|()| {
+            // Link installs a fully-written new file without replacing a path
+            // that appeared after the precondition check. Both are on one FS.
+            if create_only { std::fs::hard_link(&tmp, &path) } else { std::fs::rename(&tmp, &path) }
+        });
+    if create_only {
+        let _ = std::fs::remove_file(&tmp);
+    }
     if let Err(e) = written {
         let _ = std::fs::remove_file(&tmp);
+        if create_only && e.kind() == std::io::ErrorKind::AlreadyExists {
+            return Err(conflict(&path));
+        }
         return Err(io(&path, e));
     }
     Ok(FileResult { path: path.display().to_string(), bytes: bytes.len() })
@@ -182,6 +247,40 @@ fn swap_in(path: &Path, bytes: &[u8]) -> Result<FileResult, RpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn guarded(path: &Path, content: &[u8], original: Option<&[u8]>, create: bool, private: bool) -> Result<FileResult, RpcError> {
+        write_checked(
+            FileWriteCheckedParams {
+                at: FileAt { path: path.display().to_string(), on: None, cwd: None },
+                data: crate::put::encode(content),
+                expected_data: original.map(crate::put::encode),
+                only_if_missing: create,
+                private,
+            },
+            false,
+        )
+    }
+
+    #[test]
+    fn guarded_file_writes_create_then_reject_stale_content() {
+        let root = std::env::temp_dir().join(format!("hc-file-write-{}", crate::platform::random_hex()));
+        let path = root.join("new").join(".env");
+        guarded(&path, b"", None, true, true).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        assert_eq!(guarded(&path, b"overwritten", None, true, true).err().unwrap().kind, "conflict");
+        guarded(&path, b"KEY=value\\n", Some(b""), false, true).unwrap();
+        assert_eq!(guarded(&path, b"bad", Some(b""), false, false).err().unwrap().kind, "conflict");
+        assert_eq!(std::fs::read(&path).unwrap(), b"KEY=value\\n");
+        guarded(&path, b"KEY=changed\\n", Some(b"KEY=value\\n"), false, false).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"KEY=changed\\n");
+        assert_eq!(guarded(&path, b"bad", Some(b"missing"), true, true).err().unwrap().kind, "invalid_params");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
 
     fn edits(pairs: &[(&str, &str)]) -> Vec<Edit> {
         pairs.iter().map(|(old, new)| Edit { old: old.to_string(), new: new.to_string() }).collect()

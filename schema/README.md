@@ -18,6 +18,23 @@ less, or an answer that can carry a new kind of value or loses its type.
 At each release, copy `hc.openrpc.json` over it. A real break needs a new
 protocol generation, decided on purpose.
 
+## Guarded file saves
+
+Use `file.write_checked` rather than `file.write` for an editor. It takes
+`path`, optional `on`, and `data` (base64 bytes). Pass exactly one
+precondition: `only_if_missing: true` to create exclusively, or
+`expected_data` (base64 of the bytes originally read) to reject stale saves.
+`private: true` makes new files mode 0600 on Unix. A mismatch returns
+`data.kind: "conflict"`. Checked creation installs a complete file
+without clobbering a racing creator. Core-originated checked writes and
+edits are serialized; other processes can still change a file between
+the old-content check and the replacement, so external edits are not an
+OS-level compare-and-swap guarantee.
+
+This is a separate method intentionally: older servers reject it as
+unknown rather than ignoring a new option to the unconditional
+`file.write` method.
+
 ## Connecting
 
 On Unix, core listens on a Unix socket; on Windows, it uses a named pipe.

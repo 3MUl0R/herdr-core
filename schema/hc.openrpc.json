@@ -3223,6 +3223,144 @@
       }
     },
     {
+      "description": "Safely create or update a file here or on a machine (`on`), refusing to write unless it is missing (only_if_missing) or still matches expected_data (base64 old bytes). Never falls back to unconditional writes on older cores. Optionally create private files (0600 on Unix).",
+      "errors": [
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "conflict"
+          },
+          "message": "conflict"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "io"
+          },
+          "message": "io"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "needs_update"
+          },
+          "message": "needs_update"
+        }
+      ],
+      "name": "file.write_checked",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Where a relative path starts (default: where hc runs; through the API,\nthe core's; with --on, that machine's home).",
+          "name": "cwd",
+          "required": false,
+          "schema": {
+            "description": "Where a relative path starts (default: where hc runs; through the API,\nthe core's; with --on, that machine's home).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "New content, base64 encoded, at most 8 MB.",
+          "name": "data",
+          "required": true,
+          "schema": {
+            "description": "New content, base64 encoded, at most 8 MB.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Original bytes in base64. A mismatched current file is never overwritten.",
+          "name": "expected_data",
+          "required": false,
+          "schema": {
+            "description": "Original bytes in base64. A mismatched current file is never overwritten.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "On another machine (see `hc machine ls`).",
+          "name": "on",
+          "required": false,
+          "schema": {
+            "description": "On another machine (see `hc machine ls`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Create only when no entry is present; mutually exclusive with expected_data.",
+          "name": "only_if_missing",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Create only when no entry is present; mutually exclusive with expected_data.",
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "The file: absolute, or from `cwd`.",
+          "name": "path",
+          "required": true,
+          "schema": {
+            "description": "The file: absolute, or from `cwd`.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "On Unix, restrict newly-created files to the current user (0600).",
+          "name": "private",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "On Unix, restrict newly-created files to the current user (0600).",
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/FileResult"
+        }
+      }
+    },
+    {
       "description": "Edit a text file here or on a machine (`on`): each `old` must be found exactly once in the file as it was, edits must not overlap; all are made or none. Written like file.write.",
       "errors": [
         {
