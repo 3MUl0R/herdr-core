@@ -690,16 +690,26 @@ pub struct FileWriteParams {
     /// Its new content, base64, at most 8 MB raw (CLI: what is piped in).
     #[arg(skip)]
     pub data: String,
-    /// Optional original bytes in base64: fail instead of overwriting if the file changed.
-    /// Passing this makes file.write conditional; omitted preserves the legacy unconditional write.
+}
+
+/// A guarded write: deliberately separate from file.write so older cores fail closed.
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
+pub struct FileWriteCheckedParams {
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub at: FileAt,
+    /// New content, base64 encoded, at most 8 MB.
+    #[arg(skip)]
+    pub data: String,
+    /// Original bytes in base64. A mismatched current file is never overwritten.
     #[arg(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_data: Option<String>,
-    /// Only create the file when its target does not already exist.
+    /// Create only when no entry is present; mutually exclusive with expected_data.
     #[arg(long)]
     #[serde(default)]
     pub only_if_missing: bool,
-    /// On Unix, restrict a newly-created file to the current user (0600).
+    /// On Unix, restrict newly-created files to the current user (0600).
     #[arg(long)]
     #[serde(default)]
     pub private: bool,
