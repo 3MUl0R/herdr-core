@@ -227,6 +227,40 @@ fn swap_in(path: &Path, bytes: &[u8], private: bool) -> Result<FileResult, RpcEr
 mod tests {
     use super::*;
 
+    fn guarded(path: &Path, content: &[u8], original: Option<&[u8]>, create: bool, private: bool) -> Result<FileResult, RpcError> {
+        write(
+            FileWriteParams {
+                at: FileAt { path: path.display().to_string(), on: None, cwd: None },
+                data: crate::put::encode(content),
+                expected_data: original.map(crate::put::encode),
+                only_if_missing: create,
+                private,
+            },
+            false,
+        )
+    }
+
+    #[test]
+    fn guarded_file_writes_create_then_reject_stale_content() {
+        let root = std::env::temp_dir().join(format!("hc-file-write-{}", crate::platform::random_hex()));
+        let path = root.join("new").join(".env");
+        guarded(&path, b"", None, true, true).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        assert_eq!(guarded(&path, b"overwritten", None, true, true).unwrap_err().kind, "conflict");
+        guarded(&path, b"KEY=value\\n", Some(b""), false, true).unwrap();
+        assert_eq!(guarded(&path, b"bad", Some(b""), false, false).unwrap_err().kind, "conflict");
+        assert_eq!(std::fs::read(&path).unwrap(), b"KEY=value\\n");
+        guarded(&path, b"KEY=changed\\n", Some(b"KEY=value\\n"), false, false).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"KEY=changed\\n");
+        assert_eq!(guarded(&path, b"bad", Some(b"missing"), true, true).unwrap_err().kind, "invalid_params");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+
     fn edits(pairs: &[(&str, &str)]) -> Vec<Edit> {
         pairs.iter().map(|(old, new)| Edit { old: old.to_string(), new: new.to_string() }).collect()
     }
