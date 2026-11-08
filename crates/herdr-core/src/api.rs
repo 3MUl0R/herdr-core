@@ -117,7 +117,10 @@ methods! { Ctx<'_>;
         "Read a text file here or on a machine (`on`): lines from `offset`, at most `limit` and 8 MB, and how many it has.",
         errors ["invalid_params", "not_found", "not_text", "io", "machine_unknown", "unavailable", "needs_update"];
     "file.write" => file_write, FileWriteParams => FileResult,
-        "Write a file here or on a machine (`on`), making missing folders. Swapped in whole; existing files keep their mode. Optional expected_data (base64) checks exact old bytes, only_if_missing refuses an existing entry, and private uses mode 0600 for newly created Unix files.",
+        "Write a file here or on a machine (`on`), making missing folders. Swapped in whole: a reader sees old or new, never half. An existing file keeps its mode; a symlink is followed.",
+        errors ["invalid_params", "io", "machine_unknown", "unavailable", "needs_update"];
+    "file.write_checked" => file_write_checked, FileWriteCheckedParams => FileResult,
+        "Safely create or update a file here or on a machine (`on`), refusing to write unless it is missing (only_if_missing) or still matches expected_data (base64 old bytes). Never falls back to unconditional writes on older cores. Optionally create private files (0600 on Unix).",
         errors ["invalid_params", "conflict", "io", "not_found", "machine_unknown", "unavailable", "needs_update"];
     "file.edit" => file_edit, FileEditParams => FileResult,
         "Edit a text file here or on a machine (`on`): each `old` must be found exactly once in the file as it was, edits must not overlap; all are made or none. Written like file.write.",
@@ -506,6 +509,11 @@ async fn file_read(core: Ctx<'_>, p: FileReadParams) -> Result<FileReadResult, R
 async fn file_write(core: Ctx<'_>, p: FileWriteParams) -> Result<FileResult, RpcError> {
     let afar = from_afar(core);
     blocking(move || crate::files::write(p, afar)).await
+}
+
+async fn file_write_checked(core: Ctx<'_>, p: FileWriteCheckedParams) -> Result<FileResult, RpcError> {
+    let afar = from_afar(core);
+    blocking(move || crate::files::write_checked(p, afar)).await
 }
 
 async fn file_edit(core: Ctx<'_>, p: FileEditParams) -> Result<FileResult, RpcError> {
