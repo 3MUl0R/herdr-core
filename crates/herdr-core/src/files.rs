@@ -26,7 +26,7 @@ pub fn write(p: FileWriteParams, from_afar: bool) -> Result<FileResult, RpcError
         return Err(RpcError::invalid_params(format!("at most {} MB per write", MAX_BYTES >> 20)));
     }
     let _guard = FILE_WRITES.lock().map_err(|e| RpcError::internal(e.to_string()))?;
-    swap_in(&resolve(&p.at, from_afar), &bytes, false)
+    swap_in(&resolve(&p.at, from_afar), &bytes, false, false)
 }
 
 /// A distinct RPC method makes conditional writes fail on an older core rather
@@ -63,14 +63,14 @@ pub fn write_checked(p: FileWriteCheckedParams, from_afar: bool) -> Result<FileR
             return Err(conflict(&target));
         }
     }
-    swap_in(&path, &bytes, p.private)
+    swap_in(&path, &bytes, p.private, p.only_if_missing)
 }
 
 pub fn edit(p: FileEditParams, from_afar: bool) -> Result<FileResult, RpcError> {
     let _guard = FILE_WRITES.lock().map_err(|e| RpcError::internal(e.to_string()))?;
     let path = resolve(&p.at, from_afar);
     let edited = apply(&text_of(&path)?, &p.edits)?;
-    swap_in(&path, edited.as_bytes(), false)
+    swap_in(&path, edited.as_bytes(), false, false)
 }
 
 fn conflict(path: &Path) -> RpcError {
@@ -207,8 +207,9 @@ fn through_links(path: &Path) -> PathBuf {
 
 /// Writes beside the file and renames it in: a reader sees old or new, never
 /// half. Through a symlink to its target; an existing file keeps its mode.
-fn swap_in(path: &Path, bytes: &[u8], private: bool) -> Result<FileResult, RpcError> {
-    let path = through_links(path);
+fn swap_in(path: &Path, bytes: &[u8], private: bool, create_only: bool) -> Result<FileResult, RpcError> {
+    // A checked create never follows a late-arriving symlink.
+    let path = if create_only { path.to_path_buf() } else { through_links(path) };
     let dir = path.parent().ok_or_else(|| RpcError::invalid_params("a file, not a folder"))?;
     std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
     let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
@@ -225,7 +226,14 @@ fn swap_in(path: &Path, bytes: &[u8], private: bool) -> Result<FileResult, RpcEr
         .open(&tmp)
         .and_then(|mut f| std::io::Write::write_all(&mut f, bytes))
         .and_then(|()| mode.map_or(Ok(()), |m| std::fs::set_permissions(&tmp, m)))
-        .and_then(|()| std::fs::rename(&tmp, &path));
+        .and_then(|()| {
+            // Link installs a fully-written new file without replacing a path
+            // that appeared after the precondition check. Both are on one FS.
+            if create_only { std::fs::hard_link(&tmp, &path) } else { std::fs::rename(&tmp, &path) }
+        });
+    if create_only {
+        let _ = std::fs::remove_file(&tmp);
+    }
     if let Err(e) = written {
         let _ = std::fs::remove_file(&tmp);
         return Err(io(&path, e));
