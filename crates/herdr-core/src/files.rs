@@ -236,6 +236,9 @@ fn swap_in(path: &Path, bytes: &[u8], private: bool, create_only: bool) -> Resul
     }
     if let Err(e) = written {
         let _ = std::fs::remove_file(&tmp);
+        if create_only && e.kind() == std::io::ErrorKind::AlreadyExists {
+            return Err(conflict(&path));
+        }
         return Err(io(&path, e));
     }
     Ok(FileResult { path: path.display().to_string(), bytes: bytes.len() })
