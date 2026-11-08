@@ -1,7 +1,7 @@
 //! `file.read`, `file.write`, `file.edit`: an agent's hands on files on the
 //! machine that has them, whatever harness it runs in.
 
-use crate::api::{Edit, FileAt, FileEditParams, FileReadParams, FileReadResult, FileResult, FileWriteParams};
+use crate::api::{Edit, FileAt, FileEditParams, FileReadParams, FileReadResult, FileResult, FileWriteParams, FileWriteCheckedParams};
 use crate::rpc::RpcError;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -25,8 +25,19 @@ pub fn write(p: FileWriteParams, from_afar: bool) -> Result<FileResult, RpcError
     if bytes.len() > MAX_BYTES {
         return Err(RpcError::invalid_params(format!("at most {} MB per write", MAX_BYTES >> 20)));
     }
-    if p.only_if_missing && p.expected_data.is_some() {
-        return Err(RpcError::invalid_params("only_if_missing and expected_data cannot both be set"));
+    let _guard = FILE_WRITES.lock().map_err(|e| RpcError::internal(e.to_string()))?;
+    swap_in(&resolve(&p.at, from_afar), &bytes, false)
+}
+
+/// A distinct RPC method makes conditional writes fail on an older core rather
+/// than silently falling back to the legacy unconditional file.write method.
+pub fn write_checked(p: FileWriteCheckedParams, from_afar: bool) -> Result<FileResult, RpcError> {
+    let bytes = crate::put::decode(&p.data).ok_or_else(|| RpcError::invalid_params("data is not base64"))?;
+    if bytes.len() > MAX_BYTES {
+        return Err(RpcError::invalid_params(format!("at most {} MB per write", MAX_BYTES >> 20)));
+    }
+    if p.only_if_missing == p.expected_data.is_some() {
+        return Err(RpcError::invalid_params("provide exactly one of only_if_missing or expected_data"));
     }
     let expected = p
         .expected_data
@@ -39,7 +50,6 @@ pub fn write(p: FileWriteParams, from_afar: bool) -> Result<FileResult, RpcError
     let path = resolve(&p.at, from_afar);
     let _guard = FILE_WRITES.lock().map_err(|e| RpcError::internal(e.to_string()))?;
     if p.only_if_missing {
-        // A dangling link is also an existing entry: never create through it.
         ensure_missing(&path)?;
         ensure_missing(&through_links(&path))?;
     }
@@ -228,8 +238,8 @@ mod tests {
     use super::*;
 
     fn guarded(path: &Path, content: &[u8], original: Option<&[u8]>, create: bool, private: bool) -> Result<FileResult, RpcError> {
-        write(
-            FileWriteParams {
+        write_checked(
+            FileWriteCheckedParams {
                 at: FileAt { path: path.display().to_string(), on: None, cwd: None },
                 data: crate::put::encode(content),
                 expected_data: original.map(crate::put::encode),
