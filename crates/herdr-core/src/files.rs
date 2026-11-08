@@ -4,6 +4,10 @@
 use crate::api::{Edit, FileAt, FileEditParams, FileReadParams, FileReadResult, FileResult, FileWriteParams};
 use crate::rpc::RpcError;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+// Serialize core-originated writes and edits. Other processes can still change files.
+static FILE_WRITES: Mutex<()> = Mutex::new(());
 
 /// Raw bytes one read gives or one write takes (inline in one message).
 pub const MAX_BYTES: usize = 8 << 20;
@@ -21,14 +25,54 @@ pub fn write(p: FileWriteParams, from_afar: bool) -> Result<FileResult, RpcError
     if bytes.len() > MAX_BYTES {
         return Err(RpcError::invalid_params(format!("at most {} MB per write", MAX_BYTES >> 20)));
     }
+    if p.only_if_missing && p.expected_data.is_some() {
+        return Err(RpcError::invalid_params("only_if_missing and expected_data cannot both be set"));
+    }
+    let expected = p
+        .expected_data
+        .as_deref()
+        .map(|b64| crate::put::decode(b64).ok_or_else(|| RpcError::invalid_params("expected_data is not base64")))
+        .transpose()?;
+    if expected.as_ref().is_some_and(|b| b.len() > MAX_BYTES) {
+        return Err(RpcError::invalid_params("expected_data is too large"));
+    }
     let path = resolve(&p.at, from_afar);
-    swap_in(&path, &bytes)
+    let _guard = FILE_WRITES.lock().map_err(|e| RpcError::internal(e.to_string()))?;
+    if p.only_if_missing {
+        // A dangling link is also an existing entry: never create through it.
+        ensure_missing(&path)?;
+        ensure_missing(&through_links(&path))?;
+    }
+    if let Some(original) = expected {
+        let target = through_links(&path);
+        let metadata = std::fs::metadata(&target).map_err(|e| io(&target, e))?;
+        if !metadata.is_file() || metadata.len() != original.len() as u64 {
+            return Err(conflict(&target));
+        }
+        if std::fs::read(&target).map_err(|e| io(&target, e))? != original {
+            return Err(conflict(&target));
+        }
+    }
+    swap_in(&path, &bytes, p.private)
 }
 
 pub fn edit(p: FileEditParams, from_afar: bool) -> Result<FileResult, RpcError> {
+    let _guard = FILE_WRITES.lock().map_err(|e| RpcError::internal(e.to_string()))?;
     let path = resolve(&p.at, from_afar);
     let edited = apply(&text_of(&path)?, &p.edits)?;
-    swap_in(&path, edited.as_bytes())
+    swap_in(&path, edited.as_bytes(), false)
+}
+
+fn conflict(path: &Path) -> RpcError {
+    RpcError::new("conflict", format!("{} changed or already exists; reload before saving", path.display()), "")
+}
+
+fn ensure_missing(path: &Path) -> Result<(), RpcError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Err(conflict(path)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io(path, e)),
+    }
 }
 
 /// Relative paths start at `cwd`, as exec's programs do.
@@ -153,7 +197,7 @@ fn through_links(path: &Path) -> PathBuf {
 
 /// Writes beside the file and renames it in: a reader sees old or new, never
 /// half. Through a symlink to its target; an existing file keeps its mode.
-fn swap_in(path: &Path, bytes: &[u8]) -> Result<FileResult, RpcError> {
+fn swap_in(path: &Path, bytes: &[u8], private: bool) -> Result<FileResult, RpcError> {
     let path = through_links(path);
     let dir = path.parent().ok_or_else(|| RpcError::invalid_params("a file, not a folder"))?;
     std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
@@ -164,7 +208,7 @@ fn swap_in(path: &Path, bytes: &[u8]) -> Result<FileResult, RpcError> {
     new.write(true).create_new(true);
     // Others never see the new content before it has the old file's mode.
     #[cfg(unix)]
-    if mode.is_some() {
+    if mode.is_some() || private {
         std::os::unix::fs::OpenOptionsExt::mode(&mut new, 0o600);
     }
     let written = new
