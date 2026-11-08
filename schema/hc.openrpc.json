@@ -3131,7 +3131,7 @@
       }
     },
     {
-      "description": "Write a file here or on a machine (`on`), making missing folders. Swapped in whole: a reader sees old or new, never half. An existing file keeps its mode; a symlink is followed.",
+      "description": "Write a file here or on a machine (`on`), making missing folders. Swapped in whole; existing files keep their mode. Optional expected_data (base64) checks exact old bytes, only_if_missing refuses an existing entry, and private uses mode 0600 for newly created Unix files.",
       "errors": [
         {
           "code": -32602,
@@ -3143,9 +3143,23 @@
         {
           "code": -32000,
           "data": {
+            "kind": "conflict"
+          },
+          "message": "conflict"
+        },
+        {
+          "code": -32000,
+          "data": {
             "kind": "io"
           },
           "message": "io"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
         },
         {
           "code": -32000,
@@ -3194,6 +3208,18 @@
           }
         },
         {
+          "description": "Optional original bytes in base64: fail instead of overwriting if the file changed.\nPassing this makes file.write conditional; omitted preserves the legacy unconditional write.",
+          "name": "expected_data",
+          "required": false,
+          "schema": {
+            "description": "Optional original bytes in base64: fail instead of overwriting if the file changed.\nPassing this makes file.write conditional; omitted preserves the legacy unconditional write.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
           "description": "On another machine (see `hc machine ls`).",
           "name": "on",
           "required": false,
@@ -3206,12 +3232,32 @@
           }
         },
         {
+          "description": "Only create the file when its target does not already exist.",
+          "name": "only_if_missing",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Only create the file when its target does not already exist.",
+            "type": "boolean"
+          }
+        },
+        {
           "description": "The file: absolute, or from `cwd`.",
           "name": "path",
           "required": true,
           "schema": {
             "description": "The file: absolute, or from `cwd`.",
             "type": "string"
+          }
+        },
+        {
+          "description": "On Unix, restrict a newly-created file to the current user (0600).",
+          "name": "private",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "On Unix, restrict a newly-created file to the current user (0600).",
+            "type": "boolean"
           }
         }
       ],
